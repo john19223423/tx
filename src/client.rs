@@ -75,6 +75,9 @@ impl ClientAccount {
         if self.processed_tx.contains_key(&tx) {
             return Err(ClientErr::AlreadyProcessed);
         }
+        if amount < Decimal::new(0, PRECISION) {
+            return Err(ClientErr::InsufficientFunds);
+        }
 
         self.available += amount;
         self.total += amount;
@@ -89,6 +92,9 @@ impl ClientAccount {
         }
 
         if self.available < amount {
+            return Err(ClientErr::InsufficientFunds);
+        }
+        if amount < Decimal::new(0, PRECISION) {
             return Err(ClientErr::InsufficientFunds);
         }
 
