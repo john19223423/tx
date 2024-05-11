@@ -1,3 +1,6 @@
+use std::str::FromStr;
+
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -6,32 +9,60 @@ struct CsvTransaction {
     ty: String,
     client: u16,
     tx: u32,
-    amount: Option<f64>,
+    amount: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 enum TransactionType {
-    Deposit { client: u16, tx: u32, amount: f64 },
-    Withdrawal { client: u16, tx: u32, amount: f64 },
-    Dispute { client: u16, tx: u32 },
-    Resolve { client: u16, tx: u32 },
-    Chargeback { client: u16, tx: u32 },
+    Deposit {
+        client: u16,
+        tx: u32,
+        amount: Decimal,
+    },
+    Withdrawal {
+        client: u16,
+        tx: u32,
+        amount: Decimal,
+    },
+    Dispute {
+        client: u16,
+        tx: u32,
+    },
+    Resolve {
+        client: u16,
+        tx: u32,
+    },
+    Chargeback {
+        client: u16,
+        tx: u32,
+    },
 }
+
+const PRECISION: u32 = 4;
 
 impl TryFrom<CsvTransaction> for TransactionType {
     type Error = &'static str;
 
     fn try_from(value: CsvTransaction) -> Result<Self, Self::Error> {
+        // Small helper to ensure we always have the required precision.
+        let parse_decimal = |value: String| -> Result<Decimal, Self::Error> {
+            let dec = Decimal::from_str(&value).map_err(|_| "invalid decimal")?;
+            if dec.scale() > PRECISION {
+                return Err("Invalid precision");
+            }
+            Ok(dec)
+        };
+
         match value.ty.as_str() {
             "deposit" => Ok(Self::Deposit {
                 client: value.client,
                 tx: value.tx,
-                amount: value.amount.ok_or("No amount provided")?,
+                amount: parse_decimal(value.amount.ok_or("No amount provided")?)?,
             }),
             "withdrawal" => Ok(Self::Withdrawal {
                 client: value.client,
                 tx: value.tx,
-                amount: value.amount.ok_or("No amount provided")?,
+                amount: parse_decimal(value.amount.ok_or("No amount provided")?)?,
             }),
             "dispute" => Ok(Self::Dispute {
                 client: value.client,
