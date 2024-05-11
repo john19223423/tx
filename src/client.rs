@@ -49,14 +49,23 @@ impl ClientAccount {
         }
 
         match tx {
-            TransactionType::Deposit { tx, amount, .. } => self.handle_deposit(tx, amount)?,
-            TransactionType::Withdrawal { tx, amount, .. } => self.handle_withdraw(tx, amount)?,
+            TransactionType::Deposit {
+                tx: tx_id, amount, ..
+            } => {
+                self.handle_deposit(tx_id, amount)?;
+                self.processed_tx.insert(tx_id, tx);
+            }
+            TransactionType::Withdrawal {
+                tx: tx_id, amount, ..
+            } => {
+                self.handle_withdraw(tx_id, amount)?;
+                self.processed_tx.insert(tx_id, tx);
+            }
             TransactionType::Dispute { tx, .. } => self.handle_dispute(tx)?,
             TransactionType::Resolve { tx, .. } => self.handle_resolve(tx)?,
             TransactionType::Chargeback { tx, .. } => self.handle_chargeback(tx)?,
         }
 
-        self.processed_tx.insert(tx.transaction_id(), tx);
         Ok(())
     }
 
@@ -91,10 +100,16 @@ impl ClientAccount {
     fn handle_dispute(&mut self, tx: u32) -> Result<(), ClientErr> {
         log::debug!("[client {}] handle_dispute {tx}", self.client);
 
+        if self.under_dispute.contains(&tx) {
+            return Err(ClientErr::AlreadyProcessed);
+        }
+
         let tx = self
             .processed_tx
             .get(&tx)
             .ok_or(ClientErr::DisputedTransactionNotFound)?;
+
+        log::debug!("[client {}] dispute found: {tx:?}", self.client);
 
         if let TransactionType::Deposit { amount, .. } = tx {
             self.available -= amount;
@@ -221,7 +236,9 @@ mod tests {
     }
 
     #[test]
-    fn check_dispute() {
+    fn check_dispute_resolve_multiple_times() {
+        env_logger::init();
+
         let mut account = super::ClientAccount::new(1);
         let tx = super::TransactionType::Deposit {
             client: 1,
@@ -238,6 +255,27 @@ mod tests {
         account.process_transaction(tx.clone()).unwrap();
         assert_eq!(account.available, "0.0".parse().unwrap());
         assert_eq!(account.held, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Already under dispute.
+        let tx = super::TransactionType::Dispute { client: 1, tx: 1 };
+        account.process_transaction(tx.clone()).unwrap_err();
+        assert_eq!(account.available, "0.0".parse().unwrap());
+        assert_eq!(account.held, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Resolve.
+        let tx = super::TransactionType::Resolve { client: 1, tx: 1 };
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "1.0".parse().unwrap());
+        assert_eq!(account.held, "0.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Already resolved.
+        let tx = super::TransactionType::Resolve { client: 1, tx: 1 };
+        account.process_transaction(tx.clone()).unwrap_err();
+        assert_eq!(account.available, "1.0".parse().unwrap());
+        assert_eq!(account.held, "0.0".parse().unwrap());
         assert_eq!(account.total, "1.0".parse().unwrap());
     }
 }
