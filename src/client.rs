@@ -1,4 +1,4 @@
-use crate::types::TransactionType;
+use crate::types::{TransactionType, PRECISION};
 
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
@@ -11,7 +11,7 @@ pub enum ClientErr {
     AlreadyProcessed,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ClientAccount {
     client: u16,
     pub(crate) available: Decimal,
@@ -28,7 +28,12 @@ impl ClientAccount {
     pub fn new(client: u16) -> Self {
         Self {
             client,
-            ..Default::default()
+            available: Decimal::new(0, PRECISION),
+            held: Decimal::new(0, PRECISION),
+            total: Decimal::new(0, PRECISION),
+            locked: false,
+            processed_tx: HashMap::new(),
+            under_dispute: HashSet::new(),
         }
     }
 
@@ -43,25 +48,24 @@ impl ClientAccount {
             return Err(ClientErr::AccountLocked);
         }
 
-        let tx_id = tx.transaction_id();
-        if self.processed_tx.contains_key(&tx_id) {
-            return Err(ClientErr::AlreadyProcessed);
-        }
-
         match tx {
-            TransactionType::Deposit { amount, .. } => self.handle_deposit(amount)?,
-            TransactionType::Withdrawal { amount, .. } => self.handle_withdraw(amount)?,
+            TransactionType::Deposit { tx, amount, .. } => self.handle_deposit(tx, amount)?,
+            TransactionType::Withdrawal { tx, amount, .. } => self.handle_withdraw(tx, amount)?,
             TransactionType::Dispute { tx, .. } => self.handle_dispute(tx)?,
             TransactionType::Resolve { tx, .. } => self.handle_resolve(tx)?,
             TransactionType::Chargeback { tx, .. } => self.handle_chargeback(tx)?,
         }
 
-        self.processed_tx.insert(tx_id, tx);
+        self.processed_tx.insert(tx.transaction_id(), tx);
         Ok(())
     }
 
-    fn handle_deposit(&mut self, amount: Decimal) -> Result<(), ClientErr> {
+    fn handle_deposit(&mut self, tx: u32, amount: Decimal) -> Result<(), ClientErr> {
         log::debug!("[client {}] handle_deposit {amount} ", self.client);
+
+        if self.processed_tx.contains_key(&tx) {
+            return Err(ClientErr::AlreadyProcessed);
+        }
 
         self.available += amount;
         self.total += amount;
@@ -69,8 +73,12 @@ impl ClientAccount {
         Ok(())
     }
 
-    fn handle_withdraw(&mut self, amount: Decimal) -> Result<(), ClientErr> {
+    fn handle_withdraw(&mut self, tx: u32, amount: Decimal) -> Result<(), ClientErr> {
         log::debug!("[client {}] handle_withdraw {amount}", self.client);
+        if self.processed_tx.contains_key(&tx) {
+            return Err(ClientErr::AlreadyProcessed);
+        }
+
         if self.available < amount {
             return Err(ClientErr::InsufficientFunds);
         }
@@ -139,5 +147,97 @@ impl ClientAccount {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn check_deposit() {
+        // Valid deposit.
+        let mut account = super::ClientAccount::new(1);
+        let tx = super::TransactionType::Deposit {
+            client: 1,
+            tx: 1,
+            amount: "1.0".parse().unwrap(),
+        };
+
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Duplicate deposit.
+        account.process_transaction(tx.clone()).unwrap_err();
+        assert_eq!(account.available, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Second valid.
+        let tx = super::TransactionType::Deposit {
+            client: 1,
+            tx: 2,
+            amount: "1.0".parse().unwrap(),
+        };
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "2.0".parse().unwrap());
+        assert_eq!(account.total, "2.0".parse().unwrap());
+    }
+
+    #[test]
+    fn check_withdraw() {
+        let mut account = super::ClientAccount::new(1);
+        let tx = super::TransactionType::Deposit {
+            client: 1,
+            tx: 1,
+            amount: "1.0".parse().unwrap(),
+        };
+
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Valid withdraw.
+        let tx = super::TransactionType::Withdrawal {
+            client: 1,
+            tx: 2,
+            amount: "0.5".parse().unwrap(),
+        };
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "0.5".parse().unwrap());
+        assert_eq!(account.total, "0.5".parse().unwrap());
+
+        // Duplicate withdraw.
+        account.process_transaction(tx.clone()).unwrap_err();
+
+        // Insufficient funds.
+        let tx = super::TransactionType::Withdrawal {
+            client: 1,
+            tx: 3,
+            amount: "1.0".parse().unwrap(),
+        };
+        account.process_transaction(tx.clone()).unwrap_err();
+        assert_eq!(account.available, "0.5".parse().unwrap());
+        assert_eq!(account.total, "0.5".parse().unwrap());
+    }
+
+    #[test]
+    fn check_dispute() {
+        let mut account = super::ClientAccount::new(1);
+        let tx = super::TransactionType::Deposit {
+            client: 1,
+            tx: 1,
+            amount: "1.0".parse().unwrap(),
+        };
+
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Valid dispute.
+        let tx = super::TransactionType::Dispute { client: 1, tx: 1 };
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "0.0".parse().unwrap());
+        assert_eq!(account.held, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
     }
 }
