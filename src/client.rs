@@ -278,4 +278,50 @@ mod tests {
         assert_eq!(account.held, "0.0".parse().unwrap());
         assert_eq!(account.total, "1.0".parse().unwrap());
     }
+
+    #[test]
+    fn check_dispute_chargeback() {
+        let mut account = super::ClientAccount::new(1);
+        let tx = super::TransactionType::Deposit {
+            client: 1,
+            tx: 1,
+            amount: "1.0".parse().unwrap(),
+        };
+
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Valid dispute.
+        let tx = super::TransactionType::Dispute { client: 1, tx: 1 };
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "0.0".parse().unwrap());
+        assert_eq!(account.held, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Cannot withdraw with insufficient funds under dispute.
+        let tx = super::TransactionType::Withdrawal {
+            client: 1,
+            tx: 2,
+            amount: "1.0".parse().unwrap(),
+        };
+        account.process_transaction(tx.clone()).unwrap_err();
+        assert_eq!(account.available, "0.0".parse().unwrap());
+        assert_eq!(account.held, "1.0".parse().unwrap());
+        assert_eq!(account.total, "1.0".parse().unwrap());
+
+        // Chargeback.
+        let tx = super::TransactionType::Chargeback { client: 1, tx: 1 };
+        account.process_transaction(tx.clone()).unwrap();
+        assert_eq!(account.available, "0.0".parse().unwrap());
+        assert_eq!(account.held, "0.0".parse().unwrap());
+        assert_eq!(account.total, "0.0".parse().unwrap());
+
+        // Already charged back / account locked.
+        let tx = super::TransactionType::Chargeback { client: 1, tx: 1 };
+        account.process_transaction(tx.clone()).unwrap_err();
+        assert_eq!(account.available, "0.0".parse().unwrap());
+        assert_eq!(account.held, "0.0".parse().unwrap());
+        assert_eq!(account.total, "0.0".parse().unwrap());
+    }
 }
